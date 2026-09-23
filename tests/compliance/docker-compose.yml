@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  inferno:
+    image: inferno-framework/inferno:latest
+    container_name: inferno-fhir-testing
+    ports:
+      - "4567:4567"
+    environment:
+      # Point to the local proxy that injects auth
+      FHIR_ENDPOINT: "http://host.docker.internal:3333/fhir/R4"
+      # Alternatively, set via UI when running tests
+    volumes:
+      - ./inferno-results:/app/tmp
+    networks:
+      - fhir-compliance
+
+networks:
+  fhir-compliance:
+    driver: bridge

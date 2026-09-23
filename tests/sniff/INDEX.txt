@@ -1,0 +1,50 @@
+FHIR SNIFF TEST SUITE FOR MEDPLUM ON DATABRICKS APPS
+=====================================================
+
+Location: /Users/douglas.moore/development/dbxplum/tests/sniff/
+
+FILES:
+------
+1. sniff.mjs                  - Node.js implementation (498 lines)
+2. sniff.sh                   - Bash implementation (378 lines)
+3. setup.sh                   - Environment setup helper (58 lines)
+4. README.md                  - Complete documentation (161 lines)
+5. DELIVERY_SUMMARY.md        - This delivery (131 lines)
+
+CURRENT STATUS:
+---------------
+✓ Phase 1 Tests Working (No Credentials Required)
+  - Healthcheck (200) - postgres=true, redis=true
+  - FHIR Metadata (200) - fhirVersion=4.0.1, software=5.1.23-0b
+  - Auth Enforcement (401) - Correctly rejects unauthenticated requests
+
+SKIPPED: Phase 2 CRUD Tests (Waiting for Medplum Credentials)
+  - Will run automatically when MEDPLUM_CLIENT_ID/MEDPLUM_CLIENT_SECRET are provided
+
+QUICK START:
+-----------
+# Get Databricks token
+export DATABRICKS_TOKEN=$(databricks auth token -p FHIR | jq -r .access_token)
+
+# Run tests (choose one)
+node sniff.mjs
+bash sniff.sh
+
+FULL TEST (with Medplum creds):
+-------------------------------
+export DATABRICKS_TOKEN=$(databricks auth token -p FHIR | jq -r .access_token)
+export MEDPLUM_CLIENT_ID=<your-client-id>
+export MEDPLUM_CLIENT_SECRET=<your-client-secret>
+
+node sniff.mjs    # Will run all 10 tests including CRUD operations
+
+DOCUMENTATION:
+---------------
+- See README.md for complete usage guide
+- See DELIVERY_SUMMARY.md for technical details
+- See setup.sh for interactive environment setup
+
+NOT COMMITTED TO GIT:
+---------------------
+This work is in a new tests/sniff/ directory and has NOT been committed.
+Ready to commit when you're satisfied with the results.
