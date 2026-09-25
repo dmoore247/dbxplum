@@ -1,20 +1,14 @@
-version: '3.8'
-
-services:
-  inferno:
-    image: inferno-framework/inferno:latest
-    container_name: inferno-fhir-testing
-    ports:
-      - "4567:4567"
-    environment:
-      # Point to the local proxy that injects auth
-      FHIR_ENDPOINT: "http://host.docker.internal:3333/fhir/R4"
-      # Alternatively, set via UI when running tests
-    volumes:
-      - ./inferno-results:/app/tmp
-    networks:
-      - fhir-compliance
-
-networks:
-  fhir-compliance:
-    driver: bridge
+# DEPRECATED — do not use.
+#
+# The image `inferno-framework/inferno:latest` referenced by the original
+# single-container compose does NOT exist on any registry. Modern Inferno runs
+# as a multi-service stack (inferno + worker + redis + nginx + HL7 validator +
+# fhirpath) from the official inferno-template repo, with `us_core_test_kit`
+# added to the gemspec and `json` pinned to `~> 2.7`.
+#
+# See ../PIPELINE.md → "One-time setup (Inferno stack + proxy)" for the correct,
+# verified way to bring Inferno up (requires Docker Desktop >= 16 GB; build with
+# DOCKER_BUILDKIT=0).
+#
+# This file is retained only as a breadcrumb; it intentionally defines no
+# services so `docker compose up` here is a no-op rather than a broken pull.
