@@ -1,0 +1,28 @@
+# gitleaks config for dbxplum — extends the built-in rules with an allowlist
+# for known false positives (vendored, minified third-party code and example
+# env files). See https://github.com/gitleaks/gitleaks.
+title = "dbxplum secret-scan config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Vendored minified Medplum server bundle, generated trie files, and the built browser frontend under public/ — third-party compiled artifacts served to clients, not our secrets (they contain dot-less eyJ… identifiers and a PUBLIC reCAPTCHA site key, which is safe to expose)."
+paths = [
+  '''apps/medplum-server/server/index\.mjs''',
+  '''apps/medplum-server/server/.*\.trie''',
+  '''apps/medplum-server/public/.*''',
+]
+
+[[allowlists]]
+description = "Example env templates carry placeholders, not real secrets."
+paths = [
+  '''.*\.env\.example$''',
+]
+
+[[allowlists]]
+description = "Redis is co-located (127.0.0.1 only); these are intentional local default passwords committed as config defaults, not leaked credentials."
+regexes = [
+  '''medplum-redis-secret''',
+  '''REDIS_PASSWORD.*\|\|\s*'redis'''',
+]

@@ -455,6 +455,70 @@ function startFrontendProxy() {
 }
 
 
+// Keep the process alive across recoverable Postgres disconnects. Lakebase
+// periodically terminates an idle backend connection with an administrator
+// command (SQLSTATE 57P01); node-postgres surfaces the terminated idle client's
+// 'error' event with no listener, which becomes an uncaughtException and crashes
+// the whole server. The pool re-establishes connections on the next query, so
+// the process only needs to survive this one specific error.
+//
+// The robust fix would be pool.on('error', ...) on the pg Pool at the source,
+// but the vendored Medplum server bundle exports only main()/runFromCli() — not
+// its pool — so we cannot attach there without editing the minified bundle.
+// Medplum installs its own exit-on-uncaughtException handler, so we replace the
+// uncaughtException listeners after startup and swallow ONLY the exact 57P01
+// SQLSTATE (not a loose message substring, which could match unrelated errors).
+// Every other fault stays fatal. Caveats accepted for this narrow case: this is
+// an idle-connection error with no in-flight request to answer, and swallowing
+// an uncaughtException leaves V8 in a state Node documents as undefined — hence
+// the swallow is scoped to this single known-benign disconnect and nothing else.
+function installResilientExceptionHandler() {
+  // Recoverable connection-loss signatures: the DB connection dropped and the
+  // pool should simply reconnect on the next query. The observed Lakebase
+  // admin-terminate is SQLSTATE 57P01, but node-postgres can surface a dropped
+  // backend as other class-57/08 SQLSTATEs, as a generic 'Connection terminated
+  // unexpectedly' Error with no .code, or as a socket ECONNRESET — and it may
+  // arrive as either an uncaughtException or a rejected pool-query promise. We
+  // swallow exactly this curated set and keep every other fault fatal (a real
+  // bug still crashes, since Node documents process state after an arbitrary
+  // uncaught exception as undefined). This is an allowlist, not a blanket catch.
+  const RECOVERABLE_CODES = new Set([
+    '57P01', '57P02', '57P03',                     // admin_shutdown / crash_shutdown / cannot_connect_now
+    '08000', '08001', '08003', '08004', '08006',   // connection exception class
+    'ECONNRESET', 'EPIPE', 'ETIMEDOUT',            // socket-level drop
+  ]);
+  const RECOVERABLE_MSGS = [
+    'terminating connection due to administrator command',
+    'Connection terminated unexpectedly',
+    'Client has encountered a connection error',
+  ];
+  const isRecoverableConnLoss = (err) => {
+    if (!err) return false;
+    if (err.code && RECOVERABLE_CODES.has(err.code)) return true;
+    const msg = typeof err.message === 'string' ? err.message : '';
+    return RECOVERABLE_MSGS.some((m) => msg.includes(m));
+  };
+
+  const handle = (err, origin) => {
+    if (isRecoverableConnLoss(err)) {
+      console.warn(`[pg-resilience] Swallowed recoverable DB connection loss via ${origin} (${(err && (err.code || err.message)) || 'unknown'}); pool will reconnect on next query.`);
+      return;
+    }
+    console.error(`Fatal ${origin}:`, err);
+    process.exit(1);
+  };
+
+  // Replace Medplum's exit-on-fault handlers on BOTH channels so a disconnect
+  // delivered as an uncaughtException or as a rejected query promise is handled
+  // identically. removeAllListeners is required to drop Medplum's own handler
+  // that would otherwise exit; the curated filter above keeps real faults fatal.
+  process.removeAllListeners('uncaughtException');
+  process.removeAllListeners('unhandledRejection');
+  process.on('uncaughtException', (err) => handle(err, 'uncaughtException'));
+  process.on('unhandledRejection', (reason) => handle(reason, 'unhandledRejection'));
+  console.log('[pg-resilience] Guarded exception handlers installed for recoverable DB disconnects.');
+}
+
 async function startMedplum() {
   const { token: pgToken, expiresIn } = await fetchDatabricksToken();
   if (pgToken) {
@@ -472,6 +536,10 @@ async function startMedplum() {
 
   const { main } = await import('./server/index.mjs');
   await main('file:medplum.config.json');
+
+  // Replace Medplum's exit-on-uncaught handler now that the server is up, so a
+  // Lakebase 57P01 disconnect no longer takes the whole process down.
+  installResilientExceptionHandler();
 
   startTokenRefreshLoop(expiresIn);
 }

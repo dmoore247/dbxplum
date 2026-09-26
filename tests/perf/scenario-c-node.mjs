@@ -118,6 +118,13 @@ async function run() {
   for (const id of created) await httpReq('DELETE', `/fhir/R4/Patient/${id}`, { medplumToken: mtok });
 
   // Report
+  if (!samples.length) {
+    // No request completed (e.g. zero-length run) — reporting on an empty set
+    // would print -Infinity / NaN, so bail out cleanly instead.
+    console.log('\nNo samples recorded (no requests completed).');
+    console.log('RESULT: ✗ no data');
+    return;
+  }
   const ok = samples.filter((s) => s.status >= 200 && s.status < 300).length;
   const errs = samples.length - ok;
   const all = samples.map((s) => s.ms);

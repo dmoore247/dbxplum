@@ -161,6 +161,20 @@ async function runScenario(scenario, config) {
               return;
             }
 
+            // A request settles exactly once (end | error | timeout). Guard so a
+            // timeout that destroys the socket and a following 'error' event
+            // can't both count the request and re-schedule this VU (which would
+            // fork the VU chain and inflate concurrency / totals).
+            let settled = false;
+            const finish = (isError, latency) => {
+              if (settled) return;
+              settled = true;
+              totalRequests++;
+              if (isError) totalErrors++;
+              if (latency != null) latencies.push(latency);
+              setTimeout(runVU, 100); // small think time
+            };
+
             // Make request
             const url = new URL(`${APP_URL}${endpoint}`);
             const client = url.protocol === 'https:' ? https : http;
@@ -174,39 +188,18 @@ async function runScenario(scenario, config) {
                 },
               },
               (res) => {
-                const resStart = Date.now();
-                let data = '';
-
-                res.on('data', (chunk) => {
-                  data += chunk;
-                });
-
-                res.on('end', () => {
-                  const latency = Date.now() - reqStart;
-                  latencies.push(latency);
-                  totalRequests++;
-
-                  if (res.statusCode !== 200) {
-                    totalErrors++;
-                  }
-
-                  // Small think time
-                  setTimeout(runVU, 100);
-                });
+                // Only status/latency matter — drain and discard the body
+                // instead of buffering it (large FHIR bundles would waste memory).
+                res.resume();
+                res.on('end', () => finish(res.statusCode < 200 || res.statusCode >= 300, Date.now() - reqStart));
               }
             );
 
-            req.on('error', () => {
-              totalErrors++;
-              totalRequests++;
-              setTimeout(runVU, 100);
-            });
+            req.on('error', () => finish(true, null));
 
             req.setTimeout(5000, () => {
               req.destroy();
-              totalErrors++;
-              totalRequests++;
-              setTimeout(runVU, 100);
+              finish(true, null);
             });
           };
 
@@ -237,7 +230,14 @@ async function runScenario(scenario, config) {
 
       console.log(`\n[*] Stage: ${stage.duration}s @ ${targetVUs} VUs (${stage.duration * 1000}ms)...`);
 
-      await generateLoad(targetVUs, stageDurationMs);
+      if (targetVUs > 0) {
+        await generateLoad(targetVUs, stageDurationMs);
+      } else {
+        // Ramp-down to 0 VUs: honor the stage duration instead of resolving
+        // instantly (generateLoad(0) -> Promise.all([]) resolves in ~0ms),
+        // which would shorten totalTime and inflate reported throughput.
+        await new Promise((r) => setTimeout(r, stageDurationMs));
+      }
 
       elapsed += stage.duration;
       console.log(`[✓] Stage complete. Elapsed: ${elapsed}s, Total reqs: ${totalRequests}`);
@@ -256,11 +256,15 @@ async function runScenario(scenario, config) {
   const p95 = latencies[Math.floor(latencies.length * 0.95)] || 0;
   const p99 = latencies[Math.floor(latencies.length * 0.99)] || 0;
   const avg = latencies.reduce((a, b) => a + b, 0) / latencies.length || 0;
-  const max = Math.max(...latencies, 0);
-  const min = Math.min(...latencies, Infinity);
+  // latencies is already sorted ascending; index directly instead of spreading
+  // into Math.min/max, which throws RangeError on very large (100k+) arrays.
+  const min = latencies.length ? latencies[0] : 0;
+  const max = latencies.length ? latencies[latencies.length - 1] : 0;
 
-  const throughput = totalRequests / (totalTime / 1000);
-  const errorRate = ((totalErrors / totalRequests) * 100).toFixed(2);
+  // Guard against a stage where no request completed (unreachable endpoint or a
+  // 0-VU ramp-down): 0/0 would serialize as NaN/Infinity into the metrics file.
+  const throughput = totalTime > 0 ? totalRequests / (totalTime / 1000) : 0;
+  const errorRate = (totalRequests > 0 ? (totalErrors / totalRequests) * 100 : 0).toFixed(2);
 
   // Write results
   const summary = `Scenario ${scenario}: ${displayName}
@@ -313,7 +317,7 @@ Latency (ms):
   console.log(`[✓] Results saved to ${resultsFile}`);
   console.log(`[✓] Metrics saved to ${metricsFile}`);
 
-  return { totalRequests, errorRate: parseFloat(errorRate), latency: { p50, p95, p99, avg } };
+  return { totalRequests, errorRate: parseFloat(errorRate), throughput, latency: { p50, p95, p99, avg } };
 }
 
 /**
@@ -323,7 +327,7 @@ async function captureLogs(label) {
   return new Promise((resolve) => {
     console.log(`\n[*] Capturing app logs (${label})...`);
 
-    const child = spawn('databricks', ['apps', 'logs', 'medplum-server', '-p', 'FHIR', '--n', label === 'baseline' ? '20' : '50'], {
+    const child = spawn('databricks', ['apps', 'logs', 'medplum-server', '-p', 'FHIR', '--tail-lines', label === 'baseline' ? '20' : '50'], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 

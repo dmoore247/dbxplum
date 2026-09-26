@@ -156,6 +156,50 @@ async function getMedplumToken() {
 }
 
 /**
+ * Rewrite ONLY the self-referential navigation/identity links in a FHIR Bundle
+ * from the target origin to the proxy origin, so Inferno keeps following pages
+ * back through this proxy. Resource DATA fields (Attachment.url, Endpoint.address,
+ * Identifier, Reference, etc.) are left untouched — a blanket string replace
+ * corrupts any data value that legitimately contains the server URL. Mutates and
+ * returns `json`. Non-Bundle responses (single resources, CapabilityStatement,
+ * OperationOutcome) are passed through unchanged.
+ */
+function rewriteFhirBundleLinks(json, targetOrigin, proxyOrigin) {
+  const swap = (u) =>
+    (typeof u === 'string' && u.startsWith(targetOrigin))
+      ? proxyOrigin + u.slice(targetOrigin.length)
+      : u;
+
+  const rewriteBundle = (bundle) => {
+    if (!bundle || typeof bundle !== 'object') return;
+    if (Array.isArray(bundle.link)) {
+      for (const l of bundle.link) {
+        if (l && typeof l.url === 'string') l.url = swap(l.url);
+      }
+    }
+    if (Array.isArray(bundle.entry)) {
+      for (const e of bundle.entry) {
+        if (!e || typeof e !== 'object') continue;
+        if (typeof e.fullUrl === 'string') e.fullUrl = swap(e.fullUrl);
+        if (Array.isArray(e.link)) {
+          for (const l of e.link) {
+            if (l && typeof l.url === 'string') l.url = swap(l.url);
+          }
+        }
+        if (e.response && typeof e.response.location === 'string') {
+          e.response.location = swap(e.response.location);
+        }
+        // Nested search bundles: entry.resource can itself be a Bundle.
+        if (e.resource && e.resource.resourceType === 'Bundle') rewriteBundle(e.resource);
+      }
+    }
+  };
+
+  if (json && json.resourceType === 'Bundle') rewriteBundle(json);
+  return json;
+}
+
+/**
  * Make a proxied request to the target server
  */
 async function proxyRequest(srcReq, srcRes) {
@@ -225,11 +269,20 @@ async function proxyRequest(srcReq, srcRes) {
       } catch (e) {
         console.error(`[proxy] decompress (${enc}) failed: ${e.message}`);
       }
-      // Replace every absolute target-origin URL with the proxy origin. Covers
-      // Bundle.link.url, Bundle.entry.fullUrl, and any other self-referential
-      // links, regardless of JSON escaping of "/".
-      const body = raw.toString('utf-8').split(targetOrigin).join(proxyOrigin);
-      const buf = Buffer.from(body, 'utf-8');
+      // Rewrite ONLY the Bundle's self-referential links (pagination / fullUrl)
+      // from the target origin back to this proxy, leaving resource data intact.
+      // Parse the JSON and target specific fields; if the body isn't parseable
+      // JSON, pass it through unchanged rather than risk corrupting it.
+      let outText;
+      try {
+        const json = JSON.parse(raw.toString('utf-8'));
+        rewriteFhirBundleLinks(json, targetOrigin, proxyOrigin);
+        outText = JSON.stringify(json);
+      } catch (e) {
+        console.error(`[proxy] response JSON parse failed (${e.message}); passing body through unchanged`);
+        outText = raw.toString('utf-8');
+      }
+      const buf = Buffer.from(outText, 'utf-8');
       const outHeaders = { ...targetRes.headers };
       // We send plain, uncompressed text now.
       delete outHeaders['content-encoding'];

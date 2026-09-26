@@ -1,7 +1,7 @@
 /**
  * Scenario C: Authenticated Read/Write
  *
- * REQUIRES: MEDPLUM_CLIENT_ID and MEDPLUM_SECRET environment variables
+ * REQUIRES: MEDPLUM_CLIENT_ID and MEDPLUM_CLIENT_SECRET environment variables
  *
  * Mix of:
  * - GET Patient/{id}
@@ -15,6 +15,11 @@ import { check, sleep, group } from 'k6';
 
 // Bearer token for Medplum (obtained via client_credentials flow)
 let medplumToken = '';
+
+// Marker so teardown() can find and delete exactly the Patients this run created
+// (this write scenario creates a Patient every iteration; without cleanup those
+// orphans accumulate on the live server across runs, unlike scenario-c-node.mjs).
+const PERF_TAG_SYSTEM = 'https://dbxplum.test/perf-scenario-c';
 
 export const options = {
   stages: [
@@ -36,12 +41,12 @@ export const options = {
  */
 export function setup() {
   const clientId = __ENV.MEDPLUM_CLIENT_ID;
-  const clientSecret = __ENV.MEDPLUM_SECRET;
+  const clientSecret = __ENV.MEDPLUM_CLIENT_SECRET;
   const appUrl = __ENV.APP_URL || 'https://medplum-server-3464092709171785.aws.databricksapps.com';
   const dbToken = __ENV.DATABRICKS_TOKEN;
 
   if (!clientId || !clientSecret) {
-    console.error('MEDPLUM_CLIENT_ID and MEDPLUM_SECRET must be set');
+    console.error('MEDPLUM_CLIENT_ID and MEDPLUM_CLIENT_SECRET must be set');
     return { token: null, appUrl, dbToken };
   }
 
@@ -64,7 +69,9 @@ export function setup() {
 
   const token = res.json('access_token');
   console.log('Successfully obtained Medplum token');
-  return { token, appUrl, dbToken };
+  // Unique per-run tag applied to every created Patient, used by teardown().
+  const runTag = `run-${Date.now()}`;
+  return { token, appUrl, dbToken, runTag };
 }
 
 export default function (data) {
@@ -77,10 +84,13 @@ export default function (data) {
     return;
   }
 
+  // Auth relay the app proxy expects: Databricks gateway reads Authorization,
+  // strips it, and the medplum-server proxy reads the Medplum token from the
+  // __medplum_token cookie (NOT an X-Medplum header). Matches scenario-c-node.mjs.
   const params = {
     headers: {
       'Authorization': `Bearer ${dbToken}`,
-      'X-Medplum': `Bearer ${medplumToken}`,
+      'Cookie': `__medplum_token=${medplumToken}`,
       'Content-Type': 'application/fhir+json',
     },
   };
@@ -101,6 +111,7 @@ export default function (data) {
   group('POST Patient create', () => {
     const patientPayload = JSON.stringify({
       resourceType: 'Patient',
+      meta: { tag: [{ system: PERF_TAG_SYSTEM, code: data.runTag }] },
       name: [
         {
           family: 'Test',
@@ -129,4 +140,46 @@ export default function (data) {
   });
 
   sleep(0.3);
+}
+
+/**
+ * Teardown: delete every Patient this run created (matched by the run tag) so
+ * the write scenario doesn't leave orphans on the live server.
+ */
+export function teardown(data) {
+  if (!data.token) return;
+
+  const params = {
+    headers: {
+      'Authorization': `Bearer ${data.dbToken}`,
+      'Cookie': `__medplum_token=${data.token}`,
+      'Content-Type': 'application/fhir+json',
+    },
+  };
+
+  const searchUrl = `${data.appUrl}/fhir/R4/Patient?_tag=${encodeURIComponent(PERF_TAG_SYSTEM)}%7C${encodeURIComponent(data.runTag)}&_count=100`;
+
+  // Delete-then-research: each successful delete removes the resource from the
+  // next search. Stop as soon as a round makes no progress (every delete on the
+  // current page failed) so one undeletable Patient can't spin all 500 rounds;
+  // 404 counts as progress (already gone, tolerates eventually-consistent search).
+  let deleted = 0;
+  for (let round = 0; round < 500; round++) {
+    const res = http.get(searchUrl, params);
+    if (res.status !== 200) break;
+    const entries = res.json('entry') || [];
+    if (!entries.length) break;
+    let progressed = 0;
+    for (const entry of entries) {
+      const id = entry.resource && entry.resource.id;
+      if (!id) continue;
+      const del = http.del(`${data.appUrl}/fhir/R4/Patient/${id}`, null, params);
+      if ((del.status >= 200 && del.status < 300) || del.status === 404) {
+        deleted++;
+        progressed++;
+      }
+    }
+    if (!progressed) break; // no resource removable this round — avoid spinning
+  }
+  console.log(`teardown: deleted ${deleted} Patient(s) tagged ${data.runTag}`);
 }

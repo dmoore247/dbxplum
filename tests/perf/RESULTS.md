@@ -227,7 +227,7 @@ Latency (ms):
 
 ## Scenario C: Authenticated Read/Write (Pending Credentials)
 
-**Status**: Template prepared; awaiting MEDPLUM_CLIENT_ID and MEDPLUM_SECRET
+**Status**: Template prepared; awaiting MEDPLUM_CLIENT_ID and MEDPLUM_CLIENT_SECRET
 
 **Run instructions** (once credentials are available):
 
@@ -236,7 +236,7 @@ cd tests/perf
 
 # Export credentials
 export MEDPLUM_CLIENT_ID="<your_client_id>"
-export MEDPLUM_SECRET="<your_client_secret>"
+export MEDPLUM_CLIENT_SECRET="<your_client_secret>"
 
 # Run Scenario C via k6 (preferred)
 TOKEN=$(databricks auth token -p FHIR | jq -r .access_token)
@@ -247,7 +247,7 @@ docker run --rm \
   -e DATABRICKS_TOKEN \
   -e APP_URL="https://medplum-server-3464092709171785.aws.databricksapps.com" \
   -e MEDPLUM_CLIENT_ID \
-  -e MEDPLUM_SECRET \
+  -e MEDPLUM_CLIENT_SECRET \
   grafana/k6:latest \
   run --out json=results/scenario-c.json /perf/scenario-c.js
 ```

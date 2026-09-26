@@ -44,6 +44,70 @@ function rewriteRefs(obj, map) {
   }
 }
 
+// Collect every urn:uuid this resource references (into `out`).
+function collectUrnRefs(obj, out) {
+  if (Array.isArray(obj)) { obj.forEach((x) => collectUrnRefs(x, out)); return; }
+  if (obj && typeof obj === 'object') {
+    for (const [k, v] of Object.entries(obj)) {
+      if (k === 'reference' && typeof v === 'string' && v.startsWith('urn:uuid:')) out.add(v);
+      else collectUrnRefs(v, out);
+    }
+  }
+}
+
+// Topologically order entries so a referenced resource is created no later than
+// the entry that references it. Chunking then only ever produces backward
+// cross-chunk references (resolved via the id `map`) or same-chunk references
+// (resolved inside the transaction). A forward reference — to a urn: that lands
+// in a later chunk — is unresolvable and would fail that entry; this ordering
+// eliminates them for any acyclic bundle regardless of the input entry order.
+// Cycles (rare in US Core data) are broken best-effort and left in place.
+function topoSort(entries) {
+  const n = entries.length;
+  // Map each urn:uuid fullUrl to its entry index so references resolve to
+  // positions. Duplicate fullUrls are rare/malformed (last one wins as the
+  // reference target); entries with no fullUrl simply aren't referenceable.
+  const idxByUrn = new Map();
+  entries.forEach((e, i) => { if (typeof e.fullUrl === 'string') idxByUrn.set(e.fullUrl, i); });
+  // For each entry, the indices of the in-bundle resources it references.
+  const deps = entries.map((e, i) => {
+    const refs = new Set();
+    collectUrnRefs(e.resource, refs);
+    const out = [];
+    for (const u of refs) { const j = idxByUrn.get(u); if (j !== undefined && j !== i) out.push(j); }
+    return out;
+  });
+  // Iterative post-order DFS over indices (an explicit stack, not recursion, so
+  // a long reference chain can't overflow the call stack). Every index is
+  // emitted exactly once, so ALL entries are always posted — regardless of
+  // missing or duplicate fullUrls — with referenced resources ordered before
+  // the entries that reference them. Cycles are broken by the on-stack check.
+  const ordered = [];
+  const done = new Array(n).fill(false);
+  const onStack = new Array(n).fill(false);
+  for (let s = 0; s < n; s++) {
+    if (done[s]) continue;
+    const stack = [{ i: s, k: 0 }];
+    onStack[s] = true;
+    while (stack.length) {
+      const frame = stack[stack.length - 1];
+      const children = deps[frame.i];
+      if (frame.k < children.length) {
+        const child = children[frame.k++];
+        if (done[child] || onStack[child]) continue; // visited or cycle edge
+        onStack[child] = true;
+        stack.push({ i: child, k: 0 });
+      } else {
+        onStack[frame.i] = false;
+        done[frame.i] = true;
+        ordered.push(entries[frame.i]); // dependencies emitted before dependents
+        stack.pop();
+      }
+    }
+  }
+  return ordered;
+}
+
 async function postTransaction(entries, headers, map) {
   const bundle = { resourceType: 'Bundle', type: 'transaction', entry: entries };
   for (let attempt = 0; attempt < 6; attempt++) {
@@ -113,19 +177,22 @@ async function main() {
     }
     // Rewrite every reference in every resource to the normalized urn.
     all.forEach((e) => rewriteRefs(e.resource, refMap));
+    // Order so referenced resources never fall into a later chunk than their
+    // referencer (otherwise the forward urn: reference can't be resolved).
+    const ordered = topoSort(all);
 
-    console.log(`\n=== ${f}: ${all.length} entries, ${Math.ceil(all.length / CHUNK_SIZE)} chunk(s) ===`);
+    console.log(`\n=== ${f}: ${ordered.length} entries, ${Math.ceil(ordered.length / CHUNK_SIZE)} chunk(s) ===`);
     const map = new Map();
     let totOk = 0, totErr = 0; const patientIds = [];
-    for (let i = 0; i < all.length; i += CHUNK_SIZE) {
-      const chunk = all.slice(i, i + CHUNK_SIZE);
+    for (let i = 0; i < ordered.length; i += CHUNK_SIZE) {
+      const chunk = ordered.slice(i, i + CHUNK_SIZE);
       chunk.forEach((e) => rewriteRefs(e.resource, map));   // resolve refs to prior chunks
       process.stdout.write(`  chunk ${i / CHUNK_SIZE + 1} (${chunk.length})... `);
       const { ok, err, sample } = await postTransaction(chunk, headers, map);
       console.log(`ok=${ok} err=${err}${sample ? ' | ' + sample : ''}`);
       totOk += ok; totErr += err;
       chunk.forEach((e) => { if (e.resource?.resourceType === 'Patient' && map.has(e.fullUrl)) patientIds.push(map.get(e.fullUrl)); });
-      if (i + CHUNK_SIZE < all.length) { process.stdout.write(`  pausing ${CHUNK_PAUSE_MS / 1000}s for rate window... `); await sleep(CHUNK_PAUSE_MS); console.log('done'); }
+      if (i + CHUNK_SIZE < ordered.length) { process.stdout.write(`  pausing ${CHUNK_PAUSE_MS / 1000}s for rate window... `); await sleep(CHUNK_PAUSE_MS); console.log('done'); }
     }
     console.log(`  TOTAL ok=${totOk} err=${totErr}`);
     patientIds.forEach((id) => { console.log('  PATIENT:', id); allPatientIds.push(id.replace(/^Patient\//, '')); });

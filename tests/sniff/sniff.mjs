@@ -321,7 +321,9 @@ async function testUpdatePatient(medplumToken, patientId) {
     };
 
     const res = await request('PUT', `/fhir/R4/Patient/${patientId}`, updatePayload, medplumToken);
-    if ((res.status === 200 || res.status === 204) && res.body) {
+    // A spec-valid update returns 200 (with the updated resource) or 204 No
+    // Content (empty body) — don't require a body, or a 204 is scored FAIL.
+    if (res.status === 200 || res.status === 204) {
       result.pass(res.status, `Updated patient`);
     } else {
       result.fail(res.status, `Expected 200/204, got ${res.status}`);
