@@ -316,8 +316,13 @@ function proxyRequest(req, res) {
   // ALWAYS prefer cookie-based token over the Authorization header,
   // because the Databricks gateway REPLACES the original Authorization header
   // with its own internal token. The cookie carries the real Medplum token.
+  // EXCEPT for /oauth2/token: that endpoint does its own client auth (client_id
+  // in the body for public clients, or Basic for confidential). Overwriting it
+  // with the cookie Bearer makes Medplum reject the token exchange with
+  // "Invalid authorization header", breaking browser login on the step AFTER
+  // /auth/login succeeds.
   const cookies = parseCookies(req.headers['cookie']);
-  if (cookies[COOKIE_NAME]) {
+  if (cookies[COOKIE_NAME] && url.pathname !== '/oauth2/token') {
     headers['authorization'] = 'Bearer ' + cookies[COOKIE_NAME];
     if (url.pathname === '/auth/me') {
       console.log('[proxy] Injecting auth from cookie (overriding gateway token)');

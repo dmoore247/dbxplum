@@ -1,0 +1,11 @@
+# Reviewed false positives accepted for secret scanning (gitleaks .gitleaksignore).
+#
+# The "aws-access-token" matches below are all inside the VENDORED, MINIFIED
+# Medplum server bundle at apps/medplum-server/server/index.mjs — a single
+# ~257KB line of third-party compiled JavaScript (entropy ~3.07, well below the
+# ~4.3 of a real AWS key). These are not credentials. The file is already
+# path-allowlisted in .gitleaks.toml; these commit-scoped fingerprints
+# additionally satisfy the pre-push hook, which re-scans historical commits.
+3a301049d2e77a8987e52d668e5ea174e6c995eb:apps/medplum-server/server/index.mjs:aws-access-token:87
+59c74457b7eb0d606e0b987ac58f1b7857ccd0b3:apps/medplum-server/server/index.mjs:aws-access-token:87
+a1129f75f17a2b087127ac86956f0db0e1251907:apps/medplum-server/server/index.mjs:aws-access-token:87
