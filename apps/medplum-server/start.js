@@ -519,11 +519,49 @@ function installResilientExceptionHandler() {
   console.log('[pg-resilience] Guarded exception handlers installed for recoverable DB disconnects.');
 }
 
+// Keep the Lakebase connection (and compute) warm. The direct Lakebase endpoint
+// auto-suspends/autoscales when idle and terminates backend connections with
+// 57P01; node-postgres then reuses the dead client and throws "Client has
+// encountered a connection error and is not queryable", wedging the server
+// (/healthcheck 500) until a restart. Observed: Lakebase drops the connection
+// ~6 min into idle, and the wedge surfaces on the next query minutes later.
+// Pinging the internal /healthcheck (which runs SELECT 1 through the pool) every
+// 60s keeps at least one pool connection active — under the idle-kill threshold —
+// so the connection is never terminated, and if one does die the frequent ping
+// evicts+replaces it promptly instead of letting a stale client wedge the pool.
+function startDbKeepAlive() {
+  const INTERVAL_MS = parseInt(process.env.DB_KEEPALIVE_MS || '60000', 10);
+  if (INTERVAL_MS <= 0) return;
+  const ping = () => {
+    const req = httpRequest(
+      { hostname: '127.0.0.1', port: INTERNAL_PORT, path: '/healthcheck', method: 'GET', timeout: 15000 },
+      (res) => { res.resume(); }  // drain and discard
+    );
+    req.on('error', (e) => console.warn(`[db-keepalive] ping error: ${e.message}`));
+    req.on('timeout', () => req.destroy());
+    req.end();
+  };
+  setInterval(ping, INTERVAL_MS).unref?.();
+  console.log(`[db-keepalive] pinging internal /healthcheck every ${INTERVAL_MS / 1000}s to prevent Lakebase idle disconnects`);
+}
+
 async function startMedplum() {
   const { token: pgToken, expiresIn } = await fetchDatabricksToken();
   if (pgToken) {
     process.env.PGPASSWORD = pgToken;
   }
+  // Resolve the DB password PER CONNECTION from process.env.PGPASSWORD instead of
+  // freezing the boot token into the pool. Medplum 5.1.23 builds its pg Pool with
+  // a `password` that is an async callback reading process.env.PGPASSWORD when
+  // PGPASSWORD_DYNAMIC=true (see medplum-src/packages/server/src/database.ts
+  // initPoolConfig); otherwise it captures config.password once at pool creation.
+  // Without this flag, startTokenRefreshLoop() updates process.env.PGPASSWORD and
+  // rewrites the config file, but the live pool never re-reads either — so once
+  // the boot token expires (~1h) or a connection drops and the pool reconnects,
+  // the new connection uses the stale token, fails auth (28P01), and the pool
+  // wedges until a restart (/healthcheck then returns 500). Enabling it makes
+  // every new/reconnecting pool connection pick up the refreshed token.
+  process.env.PGPASSWORD_DYNAMIC = 'true';
   generateConfig(pgToken);
 
   console.log('Starting Medplum server...');
@@ -570,6 +608,7 @@ try {
   await startMedplum();
   await waitForMedplum();
   startFrontendProxy();
+  startDbKeepAlive();
 } catch (err) {
   console.error('Fatal startup error:', err);
   process.exit(1);
