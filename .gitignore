@@ -4,7 +4,10 @@ node_modules/
 *.log
 .env
 .env.*
+!.env.example
 .DS_Store
 .vscode/
+.claude/
+.isaac/
 medplum-src/
 /scripts/

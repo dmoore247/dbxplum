@@ -1,0 +1,15 @@
+Scenario B: Read Baseline (1→20 VUs ramp)
+=====================================
+Total Requests:      12827
+Total Errors:        0
+Error Rate:          0.00%
+Throughput:          85.28 req/s
+Total Time:          150.42s
+
+Latency (ms):
+  Min:               41.00
+  Avg:               89.82
+  p50:               79
+  p95:               161
+  p99:               343
+  Max:               4457

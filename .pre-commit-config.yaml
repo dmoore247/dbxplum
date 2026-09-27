@@ -1,0 +1,24 @@
+# Pre-commit hooks for dbxplum — block secrets/tokens before they are committed.
+#
+# One-time setup:   pre-commit install
+# Scan everything:  pre-commit run --all-files
+#
+# The gitleaks hook uses the locally-installed binary (brew install gitleaks)
+# and reads .gitleaks.toml for repo-specific allowlists.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: detect-private-key
+      - id: detect-aws-credentials
+        args: ['--allow-missing-credentials']
+      - id: check-added-large-files
+        args: ['--maxkb=10240']
+
+  - repo: local
+    hooks:
+      - id: gitleaks
+        name: gitleaks (secret scan of staged changes)
+        entry: gitleaks git --pre-commit --staged --redact --no-banner
+        language: system
+        pass_filenames: false

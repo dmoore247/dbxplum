@@ -1,0 +1,14 @@
+# DEPRECATED — do not use.
+#
+# The image `inferno-framework/inferno:latest` referenced by the original
+# single-container compose does NOT exist on any registry. Modern Inferno runs
+# as a multi-service stack (inferno + worker + redis + nginx + HL7 validator +
+# fhirpath) from the official inferno-template repo, with `us_core_test_kit`
+# added to the gemspec and `json` pinned to `~> 2.7`.
+#
+# See ../PIPELINE.md → "One-time setup (Inferno stack + proxy)" for the correct,
+# verified way to bring Inferno up (requires Docker Desktop >= 16 GB; build with
+# DOCKER_BUILDKIT=0).
+#
+# This file is retained only as a breadcrumb; it intentionally defines no
+# services so `docker compose up` here is a no-op rather than a broken pull.

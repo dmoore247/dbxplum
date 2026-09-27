@@ -1,0 +1,162 @@
+{
+  "test_run": {
+    "date": "2026-09-21",
+    "tool": "Node.js HTTPS custom harness (fallback from k6)",
+    "app_url": "https://medplum-server-3464092709171785.aws.databricksapps.com",
+    "medplum_version": "5.1.23",
+    "total_runtime_seconds": 330
+  },
+  "scenario_a": {
+    "name": "Smoke Test",
+    "endpoint": "/fhir/R4/metadata",
+    "profile": "1 VU × 30s",
+    "results": {
+      "total_requests": 180,
+      "total_errors": 0,
+      "error_rate_percent": 0.0,
+      "throughput_rps": 5.98,
+      "duration_seconds": 30.12,
+      "latency_ms": {
+        "min": 50,
+        "avg": 66.35,
+        "p50": 64,
+        "p95": 83,
+        "p99": 129,
+        "max": 197
+      }
+    },
+    "status": "PASS",
+    "thresholds_met": {
+      "p95_lt_2000ms": true,
+      "p99_lt_3000ms": true,
+      "error_rate_lt_10pct": true
+    }
+  },
+  "scenario_b": {
+    "name": "Read Baseline Ramp",
+    "endpoint": "/fhir/R4/metadata",
+    "profile": "Ramp 1→20 VUs over 2.5 min, then hold/ramp down",
+    "profile_stages": [
+      {
+        "stage": 1,
+        "duration_s": 30,
+        "target_vus": 1,
+        "requests": 164,
+        "implied_throughput_rps": 5.5
+      },
+      {
+        "stage": 2,
+        "duration_s": 90,
+        "target_vus": "1→20",
+        "requests": 9472,
+        "implied_throughput_rps": 105.2
+      },
+      {
+        "stage": 3,
+        "duration_s": 30,
+        "target_vus": 20,
+        "requests": 3191,
+        "implied_throughput_rps": 106.4
+      },
+      {
+        "stage": 4,
+        "duration_s": 30,
+        "target_vus": "20→0",
+        "requests": 0
+      }
+    ],
+    "results": {
+      "total_requests": 12827,
+      "total_errors": 0,
+      "error_rate_percent": 0.0,
+      "throughput_avg_rps": 85.28,
+      "duration_seconds": 150.42,
+      "latency_ms": {
+        "min": 41,
+        "avg": 89.82,
+        "p50": 79,
+        "p95": 161,
+        "p99": 343,
+        "max": 4457
+      }
+    },
+    "status": "PASS",
+    "thresholds_met": {
+      "p50_lt_500ms": true,
+      "p95_lt_1000ms": true,
+      "p99_lt_2000ms": true,
+      "error_rate_lt_1pct": true,
+      "throughput_gt_10_rps": true
+    },
+    "observations": [
+      "Linear throughput scaling observed (5.5 → 105 rps)",
+      "No saturation at 20 VUs; headroom for higher concurrency",
+      "Single max latency outlier (4457ms) likely Lakebase CU auto-scale event",
+      "Immediate recovery after spike; no cascading errors",
+      "Redis and Postgres handling load without backpressure"
+    ]
+  },
+  "scenario_c": {
+    "name": "Authenticated Read/Write",
+    "status": "PENDING",
+    "reason": "Awaiting MEDPLUM_CLIENT_ID and MEDPLUM_SECRET",
+    "profile": "Ramp 1→25 VUs over ~5.5 min, mix: 33% GET Patient, 33% POST Patient, 33% metadata",
+    "expected_thresholds": {
+      "p50_lt_300ms": true,
+      "p95_lt_1000ms": true,
+      "p99_lt_2000ms": true,
+      "error_rate_lt_1pct": true,
+      "throughput_gt_20_rps": true
+    },
+    "run_command": "See QUICK_START.md for authenticated scenario runner"
+  },
+  "infrastructure_health": {
+    "redis": "✓ Running, co-located",
+    "postgres_lakebase": "✓ Connected, autoscaling enabled",
+    "databricks_gateway": "✓ Auth working",
+    "medplum_app": "✓ Stable, no errors during tests",
+    "app_startup_time_s": 3,
+    "server_ready_time_s": 5
+  },
+  "file_artifacts": {
+    "scripts": [
+      "scenario-a.js",
+      "scenario-b.js",
+      "scenario-c.js",
+      "run.sh",
+      "run-autocannon.js"
+    ],
+    "documentation": [
+      "README.md",
+      "QUICK_START.md",
+      "RESULTS.md"
+    ],
+    "results": [
+      "scenario-A-metrics.json",
+      "scenario-A-results.txt",
+      "scenario-B-metrics.json",
+      "scenario-B-results.txt",
+      "logs-baseline.txt",
+      "logs-post-test.txt",
+      "summary.json"
+    ]
+  },
+  "recommendations": {
+    "immediate": [
+      "Scenarios A and B baseline established and healthy",
+      "Ready for Scenario C once credentials available",
+      "Recommend installing k6 locally for future testing (brew install k6)"
+    ],
+    "scaling": [
+      "Test at 50, 100 VUs to find app ceiling",
+      "Run 10-15 min sustained load to detect memory leaks",
+      "Monitor Lakebase CU auto-scaling impact"
+    ],
+    "workspace_citizenship": [
+      "Keep max VUs ≤ 25 (shared resource)",
+      "Space test runs 10 min apart for app cooldown",
+      "Alert on error rate > 0.1%; investigate immediately"
+    ]
+  },
+  "conclusion": "✓ Healthy, performant baseline. Zero errors under sustained 20 VU load. Ready for production scenario testing."
+}

@@ -1,0 +1,19 @@
+{
+  "scenario": "A",
+  "displayName": "Smoke Test (1 VU, 30s)",
+  "endpoint": "/fhir/R4/metadata",
+  "timestamp": "2026-09-21T16:08:15.870Z",
+  "totalRequests": 180,
+  "totalErrors": 0,
+  "errorRate": 0,
+  "throughput": 5.97649246297895,
+  "totalTime": 30.118,
+  "latency": {
+    "min": 50,
+    "avg": 66.35,
+    "p50": 64,
+    "p95": 83,
+    "p99": 129,
+    "max": 197
+  }
+}

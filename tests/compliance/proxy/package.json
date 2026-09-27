@@ -1,0 +1,23 @@
+{
+  "name": "fhir-compliance-proxy",
+  "version": "1.0.0",
+  "description": "Reverse proxy that injects Databricks OAuth bearer token for FHIR compliance testing",
+  "main": "server.js",
+  "bin": {
+    "fhir-proxy": "server.js"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "keywords": [
+    "fhir",
+    "compliance",
+    "inferno",
+    "proxy",
+    "databricks"
+  ]
+}

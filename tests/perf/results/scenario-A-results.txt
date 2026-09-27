@@ -1,0 +1,15 @@
+Scenario A: Smoke Test (1 VU, 30s)
+=====================================
+Total Requests:      180
+Total Errors:        0
+Error Rate:          0.00%
+Throughput:          5.98 req/s
+Total Time:          30.12s
+
+Latency (ms):
+  Min:               50.00
+  Avg:               66.35
+  p50:               64
+  p95:               83
+  p99:               129
+  Max:               197

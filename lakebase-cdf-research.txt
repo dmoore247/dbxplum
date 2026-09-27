@@ -1,0 +1,173 @@
+Assuming you mean **Lakebase Change Data Feed (CDF) with LTAP Direct Writes**, the key distinction is:
+
+- **CDF**: Lakebase/Postgres → Unity Catalog Delta history tables.
+- **LTAP Direct Writes**: Unity Catalog Delta/Iceberg → Lakebase synced tables; it accelerates the initial load and Snapshot refreshes. It does not replace CDF. 
+
+## 1. Enable the required previews
+
+A workspace admin must enable:
+
+1. **Lakebase Change Data Feed** preview.
+2. **LTAP Direct Writes** preview.
+
+LTAP Direct Writes requires a Lakebase project running **Postgres 17** and applies only to synced tables created after enablement.  
+
+## 2. Configure CDF on the Lakebase tables
+
+Connect with `psql`, the Lakebase SQL editor, or another PostgreSQL client:
+
+```sql
+ALTER TABLE public.orders
+REPLICA IDENTITY FULL;
+
+ALTER TABLE public.customers
+REPLICA IDENTITY FULL;
+```
+
+`REPLICA IDENTITY FULL` is required so updates and deletes include the complete before/after row state. 
+
+For all current tables in a schema:
+
+```sql
+DO $$
+DECLARE
+  r record;
+BEGIN
+  FOR r IN
+    SELECT table_schema, table_name
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+      AND table_type = 'BASE TABLE'
+  LOOP
+    EXECUTE format(
+      'ALTER TABLE %I.%I REPLICA IDENTITY FULL;',
+      r.table_schema,
+      r.table_name
+    );
+  END LOOP;
+END $$;
+```
+
+## 3. Create the CDF configuration through the API
+
+CDF is configured at the **schema level**, so every current and future table in the selected source schema is included. The exact request schema is exposed in the Postgres API reference; the operation is a branch-scoped `POST` CDF configuration call.  
+
+A practical REST pattern is:
+
+```bash
+export WORKSPACE="https://<workspace-host>"
+export DATABRICKS_TOKEN="$(databricks auth token | jq -r .access_token)"
+
+PROJECT_ID="<lakebase-project-id>"
+BRANCH_ID="<branch-id>"
+
+curl -X POST \
+  "$WORKSPACE/api/2.0/postgres/projects/$PROJECT_ID/branches/$BRANCH_ID/change_data_feed" \
+  -H "Authorization: Bearer $DATABRICKS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "spec": {
+      "database": "<lakebase-database>",
+      "source_schema": "public",
+      "destination_catalog": "<uc-catalog>",
+      "destination_schema": "<uc-schema>"
+    }
+  }'
+```
+
+The endpoint name and field names can vary with the currently deployed API version, so verify them against the [Postgres API reference](https://docs.databricks.com/api/workspace/postgres) before production automation. The Lakebase API uses `/api/2.0/postgres/` and supports OAuth authentication.  
+
+## 4. Create synced tables with LTAP Direct Writes
+
+For the reverse direction—Delta/Iceberg into Lakebase—use a synced table and set the accelerated-sync flag:
+
+```bash
+databricks postgres create-synced-table \
+  "<target-catalog>.<target-schema>.orders" \
+  --json '{
+    "spec": {
+      "source_table_full_name": "<source-catalog>.<source-schema>.orders",
+      "branch": "projects/<project-id>/branches/<branch-id>",
+      "primary_key_columns": ["order_id"],
+      "scheduling_policy": "CONTINUOUS",
+      "postgres_database": "<lakebase-database>",
+      "create_database_objects_if_missing": true,
+      "accelerated_sync": true
+    }
+  }'
+```
+
+For Python:
+
+```python
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.postgres import (
+    SyncedTable,
+    SyncedTableSyncedTableSpec,
+    SyncedTableSyncedTableSpecSyncedTableSchedulingPolicy,
+)
+
+w = WorkspaceClient()
+
+table = w.postgres.create_synced_table(
+    synced_table=SyncedTable(
+        spec=SyncedTableSyncedTableSpec(
+            source_table_full_name="<source-catalog>.<source-schema>.orders",
+            branch="projects/<project-id>/branches/<branch-id>",
+            primary_key_columns=["order_id"],
+            scheduling_policy=(
+                SyncedTableSyncedTableSpecSyncedTableSchedulingPolicy.CONTINUOUS
+            ),
+            postgres_database="<lakebase-database>",
+            create_database_objects_if_missing=True,
+            accelerated_sync=True,  # LTAP Direct Writes
+            synced_table_id="<target-catalog>.<target-schema>.orders",
+        )
+    )
+).wait()
+
+print(table.name)
+```
+
+The `accelerated_sync` field is the current DAB/SDK stop-gap for opting into Direct Writes while the capability is in beta. Every sync mode gets an accelerated initial load; Snapshot mode also gets accelerated full refreshes.  
+
+## 5. Verify both paths
+
+Check CDF status inside Lakebase:
+
+```sql
+SELECT *
+FROM wal2delta.tables;
+```
+
+Expected CDF destination tables look like:
+
+```text
+<catalog>.<schema>.lb_orders_history
+```
+
+They contain `_pg_change_type`, `_pg_lsn`, `_pg_xid`, `_timestamp`, and `_sort_by`. 
+
+Check the synced-table status:
+
+```bash
+databricks postgres get-synced-table \
+  "synced_tables/<target-catalog>.<target-schema>.orders"
+```
+
+### Recommended architecture
+
+```text
+Lakehouse Delta/Iceberg
+        │
+        │ synced table + accelerated_sync=true
+        ▼
+Lakebase/Postgres  ← application writes
+        │
+        │ CDF
+        ▼
+Unity Catalog Delta history tables
+```
+
+One important caveat: CDF destinations cannot currently use Unity Catalog managed storage reachable only through a private endpoint.
+
